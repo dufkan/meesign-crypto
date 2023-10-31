@@ -143,7 +143,7 @@ mod tests {
                         ProtocolMessage::decode::<Bytes>(
                             ctx.advance(
                                 &(ProtocolMessage {
-                                    protocol_type: ProtocolType::Frost as i32,
+                                    protocol_type: Self::PROTOCOL_TYPE as i32,
                                     message: relay,
                                 })
                                 .encode_to_vec(),
@@ -234,7 +234,7 @@ mod tests {
                         ProtocolMessage::decode::<Bytes>(
                             ctx.advance(
                                 &(ProtocolMessage {
-                                    protocol_type: ProtocolType::Frost as i32,
+                                    protocol_type: Self::PROTOCOL_TYPE as i32,
                                     message: relay,
                                 })
                                 .encode_to_vec(),
