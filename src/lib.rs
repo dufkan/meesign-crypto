@@ -1,4 +1,4 @@
-mod auth;
+pub mod auth;
 pub mod c_api;
 #[cfg(feature = "protocol")]
 pub mod protocol;
