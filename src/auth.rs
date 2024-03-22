@@ -1,39 +1,30 @@
-use openssl::{
-    ec::{EcGroup, EcKey},
-    error::ErrorStack,
-    hash::MessageDigest,
-    nid::Nid,
-    pkcs12::Pkcs12,
-    pkey::PKey,
-    x509::{X509Name, X509Req, X509},
+use std::{error::Error, str::FromStr};
+
+use p256::ecdsa::{DerSignature, SigningKey};
+use p256::pkcs8::EncodePrivateKey;
+use rand::rngs::OsRng;
+use x509_cert::der::Encode;
+use x509_cert::{
+    builder::{Builder, RequestBuilder},
+    name::Name,
 };
 
-pub fn gen_key_with_csr(name: &str) -> Result<(Vec<u8>, Vec<u8>), ErrorStack> {
-    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)?;
-    let ec_key = EcKey::generate(&group)?;
-    let key = PKey::from_ec_key(ec_key)?;
-    let key_der = key.private_key_to_der()?;
+pub fn gen_key_with_csr(name: &str) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
+    let key = SigningKey::random(&mut OsRng);
+    let key_der = key.to_pkcs8_der()?.as_bytes().to_vec();
 
-    let mut name_builder = X509Name::builder()?;
-    name_builder.append_entry_by_nid(Nid::COMMONNAME, name)?;
-    let subj_name = name_builder.build();
-
-    let mut req_builder = X509Req::builder()?;
-    req_builder.set_subject_name(&subj_name)?;
-    req_builder.set_pubkey(&key)?;
-    req_builder.sign(&key, MessageDigest::sha256())?;
-    let csr_der = req_builder.build().to_der()?;
+    let subject = Name::from_str(&format!("CN={name}"))?;
+    let builder = RequestBuilder::new(subject, &key)?;
+    let csr = builder.build::<DerSignature>()?;
+    let csr_der = csr.to_der()?;
 
     Ok((key_der, csr_der))
 }
 
-pub fn cert_key_to_pkcs12(key_der: &[u8], cert_der: &[u8]) -> Result<Vec<u8>, ErrorStack> {
-    let key = PKey::private_key_from_der(key_der)?;
-    let cert = X509::from_der(cert_der)?;
-    Pkcs12::builder()
-        .name("meesign auth key")
-        .pkey(&key)
-        .cert(&cert)
-        .build2("")?
-        .to_der()
+pub fn cert_key_to_pkcs12(key_der: &[u8], cert_der: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let ca_der = None;
+    let password = "";
+    let pfx = p12::PFX::new(cert_der, key_der, ca_der, password, "meesign auth key")
+        .ok_or("Error creating PKCS #12")?;
+    Ok(pfx.to_der())
 }

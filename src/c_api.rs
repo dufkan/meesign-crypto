@@ -214,7 +214,7 @@ pub unsafe extern "C" fn auth_keygen(name: *const c_char, error_out: *mut *mut c
     match auth::gen_key_with_csr(name) {
         Ok((key, csr)) => AuthKey::new(key, csr),
         Err(error) => {
-            set_error(error_out, &error);
+            set_error(error_out, &*error);
             AuthKey::new(vec![], vec![])
         }
     }
@@ -234,7 +234,7 @@ pub unsafe extern "C" fn auth_cert_key_to_pkcs12(
     match auth::cert_key_to_pkcs12(key_der, cert_der) {
         Ok(pkcs12) => pkcs12.into(),
         Err(error) => {
-            set_error(error_out, &error);
+            set_error(error_out, &*error);
             vec![].into()
         }
     }
