@@ -37,14 +37,3 @@ pub fn cert_key_to_pkcs12(key_der: &[u8], cert_der: &[u8]) -> Result<Vec<u8>, Er
         .build2("")?
         .to_der()
 }
-
-
-pub fn cert_der_to_pem(certificate: &[u8]) -> Vec<u8> {
-    let cert = openssl::x509::X509::from_der(certificate).unwrap();
-    cert.to_pem().unwrap()
-}
-
-pub fn key_der_to_pem(key: &[u8]) -> Vec<u8> {
-    let key = openssl::pkey::PKey::private_key_from_der(key).unwrap();
-    key.private_key_to_pem_pkcs8().unwrap()
-}
