@@ -15,6 +15,7 @@ use crate::protocol::gg18;
 use crate::protocol::{self, KeygenProtocol, ThresholdProtocol};
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub enum ProtocolId {
     Gg18,
     Elgamal,
@@ -87,14 +88,13 @@ pub unsafe extern "C" fn error_free(error: *mut c_char) {
     }
 }
 
-// TODO: consider "thin trait objects" or alternatives
 pub struct Protocol {
-    instance: Box<dyn protocol::Protocol>,
+    instances: Vec<Box<dyn protocol::Protocol>>,
 }
 
 impl Protocol {
-    fn wrap(instance: Box<dyn protocol::Protocol>) -> *mut Self {
-        Box::into_raw(Box::new(Protocol { instance }))
+    fn wrap(instances: Vec<Box<dyn protocol::Protocol>>) -> *mut Self {
+        Box::into_raw(Box::new(Protocol { instances }))
     }
 }
 
@@ -102,7 +102,7 @@ impl Protocol {
 #[no_mangle]
 pub unsafe extern "C" fn protocol_serialize(proto_ptr: *mut Protocol) -> Buffer {
     let proto = unsafe { Box::from_raw(proto_ptr) };
-    serde_json::to_vec(&proto.instance).unwrap().into()
+    serde_json::to_vec(&proto.instances).unwrap().into()
 }
 
 #[cfg(feature = "protocol")]
@@ -114,24 +114,33 @@ pub unsafe extern "C" fn protocol_deserialize(ctx_ptr: *const u8, ctx_len: usize
 
 #[cfg(feature = "protocol")]
 #[no_mangle]
-pub unsafe extern "C" fn protocol_keygen(proto_id: ProtocolId, with_card: bool) -> *mut Protocol {
-    Protocol::wrap(match (proto_id, with_card) {
-        #[cfg(feature = "gg18")]
-        (ProtocolId::Gg18, false) => Box::new(gg18::KeygenContext::new()),
-        #[cfg(feature = "elgamal")]
-        (ProtocolId::Elgamal, false) => Box::new(elgamal::KeygenContext::new()),
-        #[cfg(feature = "frost")]
-        (ProtocolId::Frost, false) => Box::new(frost::KeygenContext::new()),
-        #[cfg(feature = "frost")]
-        (ProtocolId::Frost, true) => Box::new(frost::KeygenContext::with_card()),
-        _ => panic!("Protocol not supported"),
-    })
+pub unsafe extern "C" fn protocol_keygen(
+    proto_id: ProtocolId,
+    with_card: bool,
+    shares: usize,
+) -> *mut Protocol {
+    let build_proto = |_| -> Box<dyn protocol::Protocol> {
+        match (proto_id, with_card) {
+            #[cfg(feature = "gg18")]
+            (ProtocolId::Gg18, false) => Box::new(gg18::KeygenContext::new()),
+            #[cfg(feature = "elgamal")]
+            (ProtocolId::Elgamal, false) => Box::new(elgamal::KeygenContext::new()),
+            #[cfg(feature = "frost")]
+            (ProtocolId::Frost, false) => Box::new(frost::KeygenContext::new()),
+            #[cfg(feature = "frost")]
+            (ProtocolId::Frost, true) => Box::new(frost::KeygenContext::with_card()),
+            _ => panic!("Protocol not supported"),
+        }
+    };
+
+    Protocol::wrap((0..shares).map(build_proto).collect())
 }
 
 #[cfg(feature = "protocol")]
 #[no_mangle]
 pub unsafe extern "C" fn protocol_advance(
     proto_ptr: *mut Protocol,
+    index: usize,
     data_ptr: *const u8,
     data_len: usize,
     error_out: *mut *mut c_char,
@@ -139,7 +148,7 @@ pub unsafe extern "C" fn protocol_advance(
     let data_in = unsafe { slice::from_raw_parts(data_ptr, data_len) };
     let proto = unsafe { &mut *proto_ptr };
 
-    let (vec, rec) = match proto.instance.advance(data_in) {
+    let (vec, rec) = match proto.instances[index].advance(data_in) {
         Ok((vec, rec)) => (vec, rec.into()),
         Err(error) => {
             set_error(error_out, &*error);
@@ -157,8 +166,14 @@ pub unsafe extern "C" fn protocol_finish(
 ) -> Buffer {
     let proto = unsafe { Box::from_raw(proto_ptr) };
 
-    match proto.instance.finish() {
-        Ok(data_out) => data_out,
+    let res: Result<Vec<Vec<u8>>, Box<dyn Error>> = proto
+        .instances
+        .into_iter()
+        .map(|instance| instance.finish())
+        .collect();
+
+    match res {
+        Ok(vec_data_out) => serde_json::to_vec(&vec_data_out).unwrap(),
         Err(error) => {
             set_error(error_out, &*error);
             vec![]
@@ -174,19 +189,25 @@ pub unsafe extern "C" fn protocol_init(
     proto_id: ProtocolId,
     group_ptr: *const u8,
     group_len: usize,
+    shares: usize,
 ) -> *mut Protocol {
     let group_ser = unsafe { slice::from_raw_parts(group_ptr, group_len) };
+    let shares_ser: Vec<Vec<u8>> = serde_json::from_slice(group_ser).unwrap();
 
-    Protocol::wrap(match proto_id {
-        #[cfg(feature = "gg18")]
-        ProtocolId::Gg18 => Box::new(gg18::SignContext::new(group_ser)),
-        #[cfg(feature = "elgamal")]
-        ProtocolId::Elgamal => Box::new(elgamal::DecryptContext::new(group_ser)),
-        #[cfg(feature = "frost")]
-        ProtocolId::Frost => Box::new(frost::SignContext::new(group_ser)),
-        #[cfg(not(all(feature = "gg18", feature = "elgamal", feature = "frost")))]
-        _ => panic!("Protocol not supported"),
-    })
+    let build_proto = |share_ser: &Vec<u8>| -> Box<dyn protocol::Protocol> {
+        match proto_id {
+            #[cfg(feature = "gg18")]
+            ProtocolId::Gg18 => Box::new(gg18::SignContext::new(share_ser)),
+            #[cfg(feature = "elgamal")]
+            ProtocolId::Elgamal => Box::new(elgamal::DecryptContext::new(share_ser)),
+            #[cfg(feature = "frost")]
+            ProtocolId::Frost => Box::new(frost::SignContext::new(share_ser)),
+            #[cfg(not(all(feature = "gg18", feature = "elgamal", feature = "frost")))]
+            _ => panic!("Protocol not supported"),
+        }
+    };
+
+    Protocol::wrap(shares_ser[..shares].iter().map(build_proto).collect())
 }
 
 #[repr(C)]
