@@ -29,6 +29,7 @@ pub enum Recipient {
     Server,
 }
 
+#[cfg(feature = "protocol")]
 impl From<protocol::Recipient> for Recipient {
     fn from(value: protocol::Recipient) -> Self {
         match value {
@@ -89,10 +90,12 @@ pub unsafe extern "C" fn error_free(error: *mut c_char) {
 }
 
 pub struct Protocol {
+    #[cfg(feature = "protocol")]
     instances: Vec<Box<dyn protocol::Protocol>>,
 }
 
 impl Protocol {
+    #[cfg(feature = "protocol")]
     fn wrap(instances: Vec<Box<dyn protocol::Protocol>>) -> *mut Self {
         Box::into_raw(Box::new(Protocol { instances }))
     }
