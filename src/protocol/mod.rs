@@ -9,7 +9,7 @@ mod apdu;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-use crate::proto::{ProtocolMessage, ProtocolType};
+use crate::proto::{MessageType, ProtocolMessage, ProtocolType};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 
@@ -42,35 +42,39 @@ fn deserialize_vec<'de, T: Deserialize<'de>>(vec: &'de [Vec<u8>]) -> serde_json:
         .collect()
 }
 
-fn inflate<T: Clone>(value: T, n: usize) -> Vec<T> {
-    std::iter::repeat(value).take(n).collect()
+/// Encode a broadcast message
+fn encode_raw_bcast(message: Vec<u8>, protocol_type: ProtocolType) -> Vec<u8> {
+    ProtocolMessage {
+        protocol_type: protocol_type.into(),
+        message_type: MessageType::Broadcast.into(),
+        messages: vec![message],
+    }.encode_to_vec()
 }
 
-/// Serialize value and repeat the result n times,
-/// as the current server always expects one message for each party
-fn serialize_bcast<T: Serialize>(value: &T, n: usize) -> serde_json::Result<Vec<Vec<u8>>> {
-    let ser = serde_json::to_vec(value)?;
-    Ok(inflate(ser, n))
+/// Serialize and encode a broadcast message
+fn serialize_bcast<T: Serialize>(value: &T, protocol_type: ProtocolType) -> serde_json::Result<Vec<u8>> {
+    let message = serde_json::to_vec(value)?;
+    Ok(encode_raw_bcast(message, protocol_type))
 }
 
-/// Serialize vector of unicast messages
-fn serialize_uni<T: Serialize>(vec: Vec<T>) -> serde_json::Result<Vec<Vec<u8>>> {
-    vec.iter().map(|item| serde_json::to_vec(item)).collect()
+/// Encode a Vec of unicast messages
+fn encode_raw_uni(messages: Vec<Vec<u8>>, protocol_type: ProtocolType) -> Vec<u8> {
+    ProtocolMessage {
+        protocol_type: protocol_type.into(),
+        message_type: MessageType::Unicast.into(),
+        messages,
+    }.encode_to_vec()
+}
+
+/// Serialize and encode a Vec of unicast messages
+fn serialize_uni<T: Serialize>(vec: Vec<T>, protocol_type: ProtocolType) -> serde_json::Result<Vec<u8>> {
+    let messages: serde_json::Result<Vec<_>> = vec.iter().map(serde_json::to_vec).collect();
+    Ok(encode_raw_uni(messages?, protocol_type))
 }
 
 /// Decode a protobuf message from the server
-fn unpack(data: &[u8]) -> std::result::Result<Vec<Vec<u8>>, prost::DecodeError> {
-    let msgs = ProtocolMessage::decode(data)?.message;
-    Ok(msgs)
-}
-
-/// Encode msgs as a protobuf message for the server
-fn pack(msgs: Vec<Vec<u8>>, protocol_type: ProtocolType) -> Vec<u8> {
-    ProtocolMessage {
-        protocol_type: protocol_type.into(),
-        message: msgs,
-    }
-    .encode_to_vec()
+fn decode(data: &[u8]) -> std::result::Result<Vec<Vec<u8>>, prost::DecodeError> {
+    Ok(ProtocolMessage::decode(data)?.messages)
 }
 
 #[cfg(test)]
@@ -83,6 +87,22 @@ mod tests {
         proto::{ProtocolGroupInit, ProtocolInit},
         protocol::{KeygenProtocol, ThresholdProtocol},
     };
+
+    /// Translate a message from a client to a Vec of messages for every other client
+    fn distribute_client_message(message: ProtocolMessage, parties: u32) -> Vec<Vec<u8>> {
+        match message.message_type() {
+            MessageType::Broadcast => {
+                let messages = message.messages;
+                assert_eq!(messages.len(), 1);
+                std::iter::repeat(messages[0].clone()).take(parties as usize).collect()
+            },
+            MessageType::Unicast => {
+                let messages = message.messages;
+                assert_eq!(messages.len(), parties as usize);
+                messages
+            },
+        }
+    }
 
     pub(super) trait KeygenProtocolTest: KeygenProtocol + Sized {
         // Cannot be added in Protocol (yet) due to typetag Trait limitations
@@ -114,8 +134,8 @@ mod tests {
                         .into(),
                     )
                     .unwrap()
-                    .message
                 })
+                .map(|msg| distribute_client_message(msg, parties - 1))
                 .collect();
 
             // protocol rounds
@@ -144,7 +164,8 @@ mod tests {
                             ctx.advance(
                                 &(ProtocolMessage {
                                     protocol_type: Self::PROTOCOL_TYPE as i32,
-                                    message: relay,
+                                    message_type: MessageType::Unicast.into(),
+                                    messages: relay,
                                 })
                                 .encode_to_vec(),
                             )
@@ -153,8 +174,8 @@ mod tests {
                             .into(),
                         )
                         .unwrap()
-                        .message
                     })
+                    .map(|msg| distribute_client_message(msg, parties - 1))
                     .collect();
             }
 
@@ -205,8 +226,8 @@ mod tests {
                         .into(),
                     )
                     .unwrap()
-                    .message
                 })
+                .map(|msg| distribute_client_message(msg, indices.len() as u32 - 1))
                 .collect();
 
             // protocol rounds
@@ -235,7 +256,8 @@ mod tests {
                             ctx.advance(
                                 &(ProtocolMessage {
                                     protocol_type: Self::PROTOCOL_TYPE as i32,
-                                    message: relay,
+                                    message_type: MessageType::Unicast.into(),
+                                    messages: relay,
                                 })
                                 .encode_to_vec(),
                             )
@@ -244,8 +266,8 @@ mod tests {
                             .into(),
                         )
                         .unwrap()
-                        .message
                     })
+                    .map(|msg| distribute_client_message(msg, indices.len() as u32 - 1))
                     .collect();
             }
 

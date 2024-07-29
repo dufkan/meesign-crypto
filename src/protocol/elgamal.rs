@@ -49,16 +49,16 @@ impl KeygenContext {
         let dkg =
             ParticipantCollectingCommitments::<Ristretto>::new(params, index.into(), &mut OsRng);
         let c = dkg.commitment();
-        let ser = serialize_bcast(&c, msg.parties as usize - 1)?;
+        let msg = serialize_bcast(&c, ProtocolType::Elgamal)?;
         self.round = KeygenRound::R1(dkg, index);
-        Ok(pack(ser, ProtocolType::Elgamal))
+        Ok(msg)
     }
 
     fn update(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let msgs = unpack(data)?;
+        let msgs = crate::protocol::decode(data)?;
         let n = msgs.len();
 
-        let (c, ser) = match &self.round {
+        let (c, msg) = match &self.round {
             KeygenRound::R0 => return Err("protocol not initialized".into()),
             KeygenRound::R1(dkg, idx) => {
                 let mut dkg = dkg.clone();
@@ -74,9 +74,9 @@ impl KeygenContext {
                 }
                 let dkg = dkg.finish_commitment_phase();
                 let public_info = dkg.public_info();
-                let ser = serialize_bcast(&public_info, n)?;
+                let msg = serialize_bcast(&public_info, ProtocolType::Elgamal)?;
 
-                (KeygenRound::R2(dkg, *idx), ser)
+                (KeygenRound::R2(dkg, *idx), msg)
             }
             KeygenRound::R2(dkg, idx) => {
                 let mut dkg = dkg.clone();
@@ -100,9 +100,9 @@ impl KeygenContext {
                     let secret_share = dkg.secret_share_for_participant(i);
                     shares.push(secret_share);
                 }
-                let ser = serialize_uni(shares)?;
+                let msg = serialize_uni(shares, ProtocolType::Elgamal)?;
 
-                (KeygenRound::R3(dkg, *idx), ser)
+                (KeygenRound::R3(dkg, *idx), msg)
             }
             KeygenRound::R3(dkg, idx) => {
                 let mut dkg = dkg.clone();
@@ -117,15 +117,15 @@ impl KeygenContext {
                     return Err("not enough shares".into());
                 }
                 let dkg = dkg.complete()?;
-                let ser = inflate(dkg.key_set().shared_key().as_bytes().to_vec(), n);
 
-                (KeygenRound::Done(dkg), ser)
+                let msg = encode_raw_bcast(dkg.key_set().shared_key().as_bytes().to_vec(), ProtocolType::Elgamal);
+                (KeygenRound::Done(dkg), msg)
             }
             KeygenRound::Done(_) => return Err("protocol already finished".into()),
         };
 
         self.round = c;
-        Ok(pack(ser, ProtocolType::Elgamal))
+        Ok(msg)
     }
 }
 
@@ -179,15 +179,15 @@ impl DecryptContext {
 
         let (share, proof) = self.ctx.decrypt_share(self.encrypted_key, &mut OsRng);
 
-        let ser = serialize_bcast(
+        let msg = serialize_bcast(
             &serde_json::to_string(&(share, proof))?.as_bytes(),
-            self.indices.len() - 1,
+            ProtocolType::Elgamal,
         )?;
 
         let share = (self.ctx.index(), share);
         self.shares.push(share);
 
-        Ok(pack(ser, ProtocolType::Elgamal))
+        Ok(msg)
     }
 
     fn update(&mut self, data: &[u8]) -> Result<Vec<u8>> {
@@ -198,7 +198,7 @@ impl DecryptContext {
             return Err("protocol already finished".into());
         }
 
-        let msgs = unpack(data)?;
+        let msgs = crate::protocol::decode(data)?;
 
         let data: Vec<Vec<u8>> = deserialize_vec(&msgs)?;
         let local_index = self
@@ -254,8 +254,8 @@ impl DecryptContext {
 
         self.result = Some(msg.clone());
 
-        let ser = inflate(msg, self.indices.len() - 1);
-        Ok(pack(ser, ProtocolType::Elgamal))
+        let msg = encode_raw_bcast(msg, ProtocolType::Elgamal);
+        Ok(msg)
     }
 }
 

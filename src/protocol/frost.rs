@@ -87,16 +87,16 @@ impl KeygenContext {
             OsRng,
         )?;
 
-        let msgs = serialize_bcast(&public_package, (setup.parties - 1) as usize)?;
+        let msg = serialize_bcast(&public_package, ProtocolType::Frost)?;
         self.round = KeygenRound::R1(setup, secret_package);
-        Ok((pack(msgs, ProtocolType::Frost), Recipient::Server))
+        Ok((msg, Recipient::Server))
     }
 
     fn update(&mut self, data: &[u8]) -> Result<(Vec<u8>, Recipient)> {
         let (c, data, rec) = match &self.round {
             KeygenRound::R0 => return Err("protocol not initialized".into()),
             KeygenRound::R1(setup, secret) => {
-                let data: Vec<round1::Package> = deserialize_vec(&unpack(data)?)?;
+                let data: Vec<round1::Package> = deserialize_vec(&decode(data)?)?;
                 let round1 = map_share_vec(data, &Vec::from_iter(1..=setup.parties), setup.index)?;
                 let (secret, round2) = dkg::part2(secret.clone(), &round1)?;
                 let mut round2: Vec<_> = round2.into_iter().collect();
@@ -105,20 +105,20 @@ impl KeygenContext {
 
                 (
                     KeygenRound::R2(*setup, secret, round1),
-                    pack(serialize_uni(round2)?, ProtocolType::Frost),
+                    serialize_uni(round2, ProtocolType::Frost)?,
                     Recipient::Server,
                 )
             }
             KeygenRound::R2(setup, secret, round1) => {
-                let data: Vec<round2::Package> = deserialize_vec(&unpack(data)?)?;
+                let data: Vec<round2::Package> = deserialize_vec(&decode(data)?)?;
                 let round2 = map_share_vec(data, &Vec::from_iter(1..=setup.parties), setup.index)?;
                 let (key, pubkey) = frost::keys::dkg::part3(secret, round1, &round2)?;
 
                 if !self.with_card {
-                    let msgs = inflate(serde_json::to_vec(&pubkey.verifying_key())?, round2.len());
+                    let msgs = serialize_bcast(&pubkey.verifying_key(), ProtocolType::Frost)?;
                     (
                         KeygenRound::Done(*setup, Some(key), pubkey),
-                        pack(msgs, ProtocolType::Frost),
+                        msgs,
                         Recipient::Server,
                     )
                 } else {
@@ -138,13 +138,10 @@ impl KeygenContext {
             }
             KeygenRound::R21AwaitSetupResp(setup, pubkey) => {
                 jc::response::setup(data)?;
-                let msgs = inflate(
-                    serde_json::to_vec(&pubkey.verifying_key())?,
-                    (setup.parties - 1) as usize,
-                );
+                let msg = serialize_bcast(&pubkey.verifying_key(), ProtocolType::Frost)?;
                 (
                     KeygenRound::Done(*setup, None, pubkey.clone()),
-                    pack(msgs, ProtocolType::Frost),
+                    msg,
                     Recipient::Server,
                 )
             }
@@ -222,9 +219,9 @@ impl SignContext {
         if let Some(key) = &self.key {
             let (nonces, commitments) = frost::round1::commit(key.signing_share(), &mut OsRng);
 
-            let msgs = serialize_bcast(&commitments, self.participants() - 1)?;
+            let msg = serialize_bcast(&commitments, ProtocolType::Frost)?;
             self.round = SignRound::R1(Some(nonces), commitments);
-            Ok((pack(msgs, ProtocolType::Frost), Recipient::Server))
+            Ok((msg, Recipient::Server))
         } else {
             self.round = SignRound::R01AwaitCommitResp;
             Ok((jc::command::commit(), Recipient::Card))
@@ -236,12 +233,12 @@ impl SignContext {
             SignRound::R0 => Err("protocol not initialized".into()),
             SignRound::R01AwaitCommitResp => {
                 let commitments = jc::response::commit(data)?;
-                let msgs = serialize_bcast(&commitments, self.participants() - 1)?;
+                let msg = serialize_bcast(&commitments, ProtocolType::Frost)?;
                 self.round = SignRound::R1(None, commitments);
-                Ok((pack(msgs, ProtocolType::Frost), Recipient::Server))
+                Ok((msg, Recipient::Server))
             }
             SignRound::R1(nonces, commitments) => {
-                let data: Vec<SigningCommitments> = deserialize_vec(&unpack(data)?)?;
+                let data: Vec<SigningCommitments> = deserialize_vec(&decode(data)?)?;
 
                 let mut commitments_map: BTreeMap<Identifier, SigningCommitments> =
                     map_share_vec(data, self.indices.as_deref().unwrap(), self.setup.index)?;
@@ -254,9 +251,9 @@ impl SignContext {
                 if let Some(key) = &self.key {
                     let share =
                         frost::round2::sign(&signing_package, nonces.as_ref().unwrap(), key)?;
-                    let msgs = serialize_bcast(&share, self.participants() - 1)?;
+                    let msg = serialize_bcast(&share, ProtocolType::Frost)?;
                     self.round = SignRound::R2(signing_package, share);
-                    Ok((pack(msgs, ProtocolType::Frost), Recipient::Server))
+                    Ok((msg, Recipient::Server))
                 } else {
                     let index = self.indices.as_deref().unwrap()[0];
                     let command = jc::command::commitment(
@@ -294,12 +291,12 @@ impl SignContext {
             }
             SignRound::R12AwaitSignResp(signing_package) => {
                 let share = jc::response::sign(data)?;
-                let msgs = serialize_bcast(&share, self.participants() - 1)?;
+                let msg = serialize_bcast(&share, ProtocolType::Frost)?;
                 self.round = SignRound::R2(signing_package.clone(), share);
-                Ok((pack(msgs, ProtocolType::Frost), Recipient::Server))
+                Ok((msg, Recipient::Server))
             }
             SignRound::R2(signing_package, share) => {
-                let data: Vec<SignatureShare> = deserialize_vec(&unpack(data)?)?;
+                let data: Vec<SignatureShare> = deserialize_vec(&decode(data)?)?;
 
                 let mut shares: BTreeMap<Identifier, SignatureShare> =
                     map_share_vec(data, self.indices.as_deref().unwrap(), self.setup.index)?;
@@ -308,9 +305,9 @@ impl SignContext {
 
                 let signature = frost::aggregate(signing_package, &shares, &self.pubkey)?;
 
-                let msgs = serialize_bcast(&signature, self.participants() - 1)?;
+                let msg = serialize_bcast(&signature, ProtocolType::Frost)?;
                 self.round = SignRound::Done(signature);
-                Ok((pack(msgs, ProtocolType::Frost), Recipient::Server))
+                Ok((msg, Recipient::Server))
             }
             SignRound::Done(_) => Err("protocol already finished".into()),
         }

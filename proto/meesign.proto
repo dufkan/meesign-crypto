@@ -21,7 +21,13 @@ message ProtocolInit {
   bytes data = 4;
 }
 
+enum MessageType {
+  UNICAST = 0;
+  BROADCAST = 1;
+}
+
 message ProtocolMessage {
   ProtocolType protocol_type = 1;
-  repeated bytes message = 2;
+  MessageType message_type = 2;
+  repeated bytes messages = 3;
 }
