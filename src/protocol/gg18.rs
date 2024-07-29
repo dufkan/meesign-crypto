@@ -29,47 +29,46 @@ impl KeygenContext {
             (msg.parties as u16, msg.threshold as u16, msg.index as u16);
 
         let (out, c1) = gg18_key_gen_1(parties, threshold, index)?;
-        let ser = serialize_bcast(&out, msg.parties as usize - 1)?;
+        let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
 
         self.round = KeygenRound::R1(c1);
-        Ok(pack(ser, ProtocolType::Gg18))
+        Ok(msg)
     }
 
     fn update(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let msgs = unpack(data)?;
-        let n = msgs.len();
+        let msgs = decode(data)?;
 
-        let (c, ser) = match &self.round {
+        let (c, msg) = match &self.round {
             KeygenRound::R0 => unreachable!(),
             KeygenRound::R1(c1) => {
                 let (out, c2) = gg18_key_gen_2(deserialize_vec(&msgs)?, c1.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (KeygenRound::R2(c2), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (KeygenRound::R2(c2), msg)
             }
             KeygenRound::R2(c2) => {
                 let (outs, c3) = gg18_key_gen_3(deserialize_vec(&msgs)?, c2.clone())?;
-                let ser = serialize_uni(outs)?;
-                (KeygenRound::R3(c3), ser)
+                let msg = serialize_uni(outs, ProtocolType::Gg18)?;
+                (KeygenRound::R3(c3), msg)
             }
             KeygenRound::R3(c3) => {
                 let (out, c4) = gg18_key_gen_4(deserialize_vec(&msgs)?, c3.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (KeygenRound::R4(c4), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (KeygenRound::R4(c4), msg)
             }
             KeygenRound::R4(c4) => {
                 let (out, c5) = gg18_key_gen_5(deserialize_vec(&msgs)?, c4.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (KeygenRound::R5(c5), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (KeygenRound::R5(c5), msg)
             }
             KeygenRound::R5(c5) => {
                 let c = gg18_key_gen_6(deserialize_vec(&msgs)?, c5.clone())?;
-                let ser = inflate(c.pk.to_bytes(false).to_vec(), n);
-                (KeygenRound::Done(c), ser)
+                let msg = encode_raw_bcast(c.pk.to_bytes(false).to_vec(), ProtocolType::Gg18);
+                (KeygenRound::Done(c), msg)
             }
             KeygenRound::Done(_) => todo!(),
         };
         self.round = c;
-        Ok(pack(ser, ProtocolType::Gg18))
+        Ok(msg)
     }
 }
 
@@ -124,7 +123,6 @@ impl SignContext {
         let msg = ProtocolInit::decode(data)?;
 
         let indices: Vec<u16> = msg.indices.clone().into_iter().map(|i| i as u16).collect();
-        let parties = indices.len();
         let local_index = indices.iter().position(|&i| i == msg.index as u16).unwrap();
 
         let c0 = match &self.round {
@@ -133,67 +131,66 @@ impl SignContext {
         };
 
         let (out, c1) = gg18_sign1(c0, indices, local_index, msg.data)?;
-        let ser = serialize_bcast(&out, parties - 1)?;
+        let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
         self.round = SignRound::R1(c1);
-        Ok(pack(ser, ProtocolType::Gg18))
+        Ok(msg)
     }
 
     fn update(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let msgs = unpack(data)?;
-        let n = msgs.len();
+        let msgs = decode(data)?;
 
-        let (c, ser) = match &self.round {
+        let (c, msg) = match &self.round {
             SignRound::R0(_) => unreachable!(),
             SignRound::R1(c1) => {
                 let (outs, c2) = gg18_sign2(deserialize_vec(&msgs)?, c1.clone())?;
-                let ser = serialize_uni(outs)?;
-                (SignRound::R2(c2), ser)
+                let msg = serialize_uni(outs, ProtocolType::Gg18)?;
+                (SignRound::R2(c2), msg)
             }
             SignRound::R2(c2) => {
                 let (out, c3) = gg18_sign3(deserialize_vec(&msgs)?, c2.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (SignRound::R3(c3), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (SignRound::R3(c3), msg)
             }
             SignRound::R3(c3) => {
                 let (out, c4) = gg18_sign4(deserialize_vec(&msgs)?, c3.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (SignRound::R4(c4), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (SignRound::R4(c4), msg)
             }
             SignRound::R4(c4) => {
                 let (out, c5) = gg18_sign5(deserialize_vec(&msgs)?, c4.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (SignRound::R5(c5), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (SignRound::R5(c5), msg)
             }
             SignRound::R5(c5) => {
                 let (out, c6) = gg18_sign6(deserialize_vec(&msgs)?, c5.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (SignRound::R6(c6), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (SignRound::R6(c6), msg)
             }
             SignRound::R6(c6) => {
                 let (out, c7) = gg18_sign7(deserialize_vec(&msgs)?, c6.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (SignRound::R7(c7), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (SignRound::R7(c7), msg)
             }
             SignRound::R7(c7) => {
                 let (out, c8) = gg18_sign8(deserialize_vec(&msgs)?, c7.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (SignRound::R8(c8), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (SignRound::R8(c8), msg)
             }
             SignRound::R8(c8) => {
                 let (out, c9) = gg18_sign9(deserialize_vec(&msgs)?, c8.clone())?;
-                let ser = serialize_bcast(&out, n)?;
-                (SignRound::R9(c9), ser)
+                let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
+                (SignRound::R9(c9), msg)
             }
             SignRound::R9(c9) => {
                 let sig = gg18_sign10(deserialize_vec(&msgs)?, c9.clone())?;
-                let ser = inflate(sig.clone(), n);
-                (SignRound::Done(sig), ser)
+                let msg = encode_raw_bcast(sig.clone(), ProtocolType::Gg18);
+                (SignRound::Done(sig), msg)
             }
             SignRound::Done(_) => todo!(),
         };
 
         self.round = c;
-        Ok(pack(ser, ProtocolType::Gg18))
+        Ok(msg)
     }
 }
 
