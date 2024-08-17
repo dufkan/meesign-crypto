@@ -68,8 +68,10 @@ fn encode_raw_uni(messages: Vec<Vec<u8>>, protocol_type: ProtocolType) -> Vec<u8
 
 /// Serialize and encode a Vec of unicast messages
 fn serialize_uni<T: Serialize>(vec: Vec<T>, protocol_type: ProtocolType) -> serde_json::Result<Vec<u8>> {
-    let messages: serde_json::Result<Vec<_>> = vec.iter().map(serde_json::to_vec).collect();
-    Ok(encode_raw_uni(messages?, protocol_type))
+    let messages = vec.iter()
+        .map(serde_json::to_vec)
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    Ok(encode_raw_uni(messages, protocol_type))
 }
 
 /// Decode a protobuf message from the server
