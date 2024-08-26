@@ -107,7 +107,10 @@ impl KeygenContext {
                 }
                 let dkg = dkg.complete()?;
 
-                let msg = encode_raw_bcast(dkg.key_set().shared_key().as_bytes().to_vec(), ProtocolType::Elgamal);
+                let msg = encode_raw_bcast(
+                    dkg.key_set().shared_key().as_bytes().to_vec(),
+                    ProtocolType::Elgamal,
+                );
                 (KeygenRound::Done(dkg), msg)
             }
             KeygenRound::Done(_) => return Err("protocol already finished".into()),
