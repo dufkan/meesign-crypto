@@ -1,4 +1,4 @@
-use crate::proto::{ProtocolGroupInit, ProtocolInit, ProtocolType};
+use crate::proto::{ProtocolGroupInit, ProtocolInit, ProtocolType, ServerMessage};
 use crate::protocol::*;
 
 use frost::keys::dkg::{self, round1, round2};
@@ -10,7 +10,6 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
-use std::iter::FromIterator;
 
 use frost_secp256k1 as frost;
 use rand::rngs::OsRng;
@@ -22,23 +21,14 @@ struct Setup {
     index: u16,
 }
 
-fn map_share_vec<T, C>(vec: Vec<T>, indices: &[u16], index: u16) -> Result<C>
-where
-    C: FromIterator<(Identifier, T)>,
-{
-    let pos = indices
-        .iter()
-        .position(|&x| x == index)
-        .ok_or("missing index")?;
-    let collection = vec
-        .into_iter()
-        .enumerate()
-        .map(move |(i, item)| {
-            let index = indices[if i < pos { i } else { i + 1 }];
-            (Identifier::try_from(index).unwrap(), item)
-        })
-        .collect();
-    Ok(collection)
+fn map_index_identifier<T>(
+    kvs: impl Iterator<Item = (u32, T)>,
+) -> impl Iterator<Item = (Identifier, T)> {
+    kvs.map(|(i, x)| {
+        assert!(i > 0);
+        assert!(i <= u16::MAX as u32);
+        (Identifier::try_from(i as u16).unwrap(), x)
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -96,12 +86,16 @@ impl KeygenContext {
         let (c, data, rec) = match &self.round {
             KeygenRound::R0 => return Err("protocol not initialized".into()),
             KeygenRound::R1(setup, secret) => {
-                let data: Vec<round1::Package> = deserialize_vec(&decode(data)?)?;
-                let round1 = map_share_vec(data, &Vec::from_iter(1..=setup.parties), setup.index)?;
+                let data = ServerMessage::decode(data)?.broadcasts;
+                let round1 = deserialize_map(&data)?;
+                let indices: Vec<_> = round1.keys().cloned().collect();
+                let round1 = map_index_identifier(round1.into_iter()).collect();
                 let (secret, round2) = dkg::part2(secret.clone(), &round1)?;
-                let mut round2: Vec<_> = round2.into_iter().collect();
-                round2.sort_by_key(|(i, _)| *i);
-                let round2: Vec<_> = round2.into_iter().map(|(_, p)| p).collect();
+
+                let round2 = indices.into_iter().map(|i| {
+                    let id = Identifier::try_from(i as u16).unwrap();
+                    (i, round2.get(&id))
+                });
 
                 (
                     KeygenRound::R2(*setup, secret, round1),
@@ -110,8 +104,9 @@ impl KeygenContext {
                 )
             }
             KeygenRound::R2(setup, secret, round1) => {
-                let data: Vec<round2::Package> = deserialize_vec(&decode(data)?)?;
-                let round2 = map_share_vec(data, &Vec::from_iter(1..=setup.parties), setup.index)?;
+                let data = ServerMessage::decode(data)?.unicasts;
+                let round2 = deserialize_map(&data)?;
+                let round2 = map_index_identifier(round2.into_iter()).collect();
                 let (key, pubkey) = frost::keys::dkg::part3(secret, round1, &round2)?;
 
                 if !self.with_card {
@@ -238,10 +233,10 @@ impl SignContext {
                 Ok((msg, Recipient::Server))
             }
             SignRound::R1(nonces, commitments) => {
-                let data: Vec<SigningCommitments> = deserialize_vec(&decode(data)?)?;
-
+                let data = ServerMessage::decode(data)?.broadcasts;
+                let commitments_map = deserialize_map(&data)?;
                 let mut commitments_map: BTreeMap<Identifier, SigningCommitments> =
-                    map_share_vec(data, self.indices.as_deref().unwrap(), self.setup.index)?;
+                    map_index_identifier(commitments_map.into_iter()).collect();
                 let identifier = Identifier::try_from(self.setup.index).unwrap();
                 commitments_map.insert(identifier, *commitments);
 
@@ -296,10 +291,10 @@ impl SignContext {
                 Ok((msg, Recipient::Server))
             }
             SignRound::R2(signing_package, share) => {
-                let data: Vec<SignatureShare> = deserialize_vec(&decode(data)?)?;
-
+                let data = ServerMessage::decode(data)?.broadcasts;
+                let shares = deserialize_map(&data)?;
                 let mut shares: BTreeMap<Identifier, SignatureShare> =
-                    map_share_vec(data, self.indices.as_deref().unwrap(), self.setup.index)?;
+                    map_index_identifier(shares.into_iter()).collect();
                 let identifier = Identifier::try_from(self.setup.index).unwrap();
                 shares.insert(identifier, *share);
 

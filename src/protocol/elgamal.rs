@@ -1,4 +1,4 @@
-use crate::proto::{ProtocolGroupInit, ProtocolInit, ProtocolType};
+use crate::proto::{ProtocolGroupInit, ProtocolInit, ProtocolType, ServerMessage};
 use crate::protocol::*;
 use curve25519_dalek::{
     ristretto::{CompressedRistretto, RistrettoPoint},
@@ -19,6 +19,8 @@ use aes_gcm::{
 use prost::Message;
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct KeygenContext {
     round: KeygenRound,
@@ -27,9 +29,9 @@ pub(crate) struct KeygenContext {
 #[derive(Serialize, Deserialize)]
 enum KeygenRound {
     R0,
-    R1(ParticipantCollectingCommitments<Ristretto>, u16),
-    R2(ParticipantCollectingPolynomials<Ristretto>, u16),
-    R3(ParticipantExchangingSecrets<Ristretto>, u16),
+    R1(ParticipantCollectingCommitments<Ristretto>),
+    R2(ParticipantCollectingPolynomials<Ristretto>),
+    R3(ParticipantExchangingSecrets<Ristretto>),
     Done(ActiveParticipant<Ristretto>),
 }
 
@@ -50,24 +52,20 @@ impl KeygenContext {
             ParticipantCollectingCommitments::<Ristretto>::new(params, index.into(), &mut OsRng);
         let c = dkg.commitment();
         let msg = serialize_bcast(&c, ProtocolType::Elgamal)?;
-        self.round = KeygenRound::R1(dkg, index);
+        self.round = KeygenRound::R1(dkg);
         Ok(msg)
     }
 
     fn update(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let msgs = crate::protocol::decode(data)?;
-        let n = msgs.len();
+        let msgs = ServerMessage::decode(data)?;
 
         let (c, msg) = match &self.round {
             KeygenRound::R0 => return Err("protocol not initialized".into()),
-            KeygenRound::R1(dkg, idx) => {
+            KeygenRound::R1(dkg) => {
                 let mut dkg = dkg.clone();
-                let data = deserialize_vec(&msgs)?;
-                for (mut i, msg) in data.into_iter().enumerate() {
-                    if i >= *idx as usize {
-                        i += 1;
-                    }
-                    dkg.insert_commitment(i, msg);
+                let data = deserialize_map(&msgs.broadcasts)?;
+                for (i, msg) in data {
+                    dkg.insert_commitment(i as usize, msg);
                 }
                 if dkg.missing_commitments().next().is_some() {
                     return Err("not enough commitments".into());
@@ -76,42 +74,33 @@ impl KeygenContext {
                 let public_info = dkg.public_info();
                 let msg = serialize_bcast(&public_info, ProtocolType::Elgamal)?;
 
-                (KeygenRound::R2(dkg, *idx), msg)
+                (KeygenRound::R2(dkg), msg)
             }
-            KeygenRound::R2(dkg, idx) => {
+            KeygenRound::R2(dkg) => {
                 let mut dkg = dkg.clone();
-                let data = deserialize_vec(&msgs)?;
-                for (mut i, msg) in data.into_iter().enumerate() {
-                    if i >= *idx as usize {
-                        i += 1;
-                    }
-                    dkg.insert_public_polynomial(i, msg)?
+                let data = deserialize_map(&msgs.broadcasts)?;
+                for (i, msg) in data {
+                    dkg.insert_public_polynomial(i as usize, msg)?
                 }
                 if dkg.missing_public_polynomials().next().is_some() {
                     return Err("not enough polynomials".into());
                 }
                 let dkg = dkg.finish_polynomials_phase();
 
-                let mut shares = Vec::new();
-                for mut i in 0..n {
-                    if i >= *idx as usize {
-                        i += 1;
-                    }
-                    let secret_share = dkg.secret_share_for_participant(i);
-                    shares.push(secret_share);
-                }
+                let shares = msgs
+                    .broadcasts
+                    .into_keys()
+                    .map(|i| (i, dkg.secret_share_for_participant(i as usize)));
+
                 let msg = serialize_uni(shares, ProtocolType::Elgamal)?;
 
-                (KeygenRound::R3(dkg, *idx), msg)
+                (KeygenRound::R3(dkg), msg)
             }
-            KeygenRound::R3(dkg, idx) => {
+            KeygenRound::R3(dkg) => {
                 let mut dkg = dkg.clone();
-                let data = deserialize_vec(&msgs)?;
-                for (mut i, msg) in data.into_iter().enumerate() {
-                    if i >= *idx as usize {
-                        i += 1;
-                    }
-                    dkg.insert_secret_share(i, msg)?;
+                let data = deserialize_map(&msgs.unicasts)?;
+                for (i, msg) in data {
+                    dkg.insert_secret_share(i as usize, msg)?;
                 }
                 if dkg.missing_shares().next().is_some() {
                     return Err("not enough shares".into());
@@ -160,7 +149,6 @@ pub(crate) struct DecryptContext {
     ctx: ActiveParticipant<Ristretto>,
     encrypted_key: Ciphertext<Ristretto>,
     data: (Vec<u8>, Vec<u8>, Vec<u8>),
-    indices: Vec<u16>,
     shares: Vec<(usize, VerifiableDecryption<Ristretto>)>,
     result: Option<Vec<u8>>,
 }
@@ -173,7 +161,6 @@ impl DecryptContext {
             return Err("wrong protocol type".into());
         }
 
-        self.indices = msg.indices.clone().into_iter().map(|i| i as u16).collect();
         self.data = serde_json::from_slice(&msg.data)?;
         self.encrypted_key = serde_json::from_slice(&self.data.0)?;
 
@@ -198,32 +185,17 @@ impl DecryptContext {
             return Err("protocol already finished".into());
         }
 
-        let msgs = crate::protocol::decode(data)?;
+        let msgs = ServerMessage::decode(data)?;
 
-        let data: Vec<Vec<u8>> = deserialize_vec(&msgs)?;
-        let local_index = self
-            .indices
-            .iter()
-            .position(|x| *x as usize == self.ctx.index())
-            .ok_or("participant index not included")?;
-        assert_eq!(self.ctx.index(), self.indices[local_index] as usize);
-
-        for (mut i, msg) in data.into_iter().enumerate() {
-            if i >= local_index {
-                i += 1;
-            }
+        let data: HashMap<u32, Vec<u8>> = deserialize_map(&msgs.broadcasts)?;
+        for (i, msg) in data {
             let msg: (VerifiableDecryption<Ristretto>, LogEqualityProof<Ristretto>) =
                 serde_json::from_slice(&msg)?;
             self.ctx
                 .key_set()
-                .verify_share(
-                    msg.0.into(),
-                    self.encrypted_key,
-                    self.indices[i].into(),
-                    &msg.1,
-                )
+                .verify_share(msg.0.into(), self.encrypted_key, i as usize, &msg.1)
                 .unwrap();
-            self.shares.push((self.indices[i].into(), msg.0));
+            self.shares.push((i as usize, msg.0));
         }
 
         let mut key = [0u8; 16];
@@ -284,7 +256,6 @@ impl ThresholdProtocol for DecryptContext {
             ctx: serde_json::from_slice(group).expect("could not deserialize group context"),
             encrypted_key: Ciphertext::zero(),
             data: (Vec::new(), Vec::new(), Vec::new()),
-            indices: Vec::new(),
             shares: Vec::new(),
             result: None,
         }

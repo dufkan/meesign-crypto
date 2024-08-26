@@ -21,13 +21,14 @@ message ProtocolInit {
   bytes data = 4;
 }
 
-enum MessageType {
-  UNICAST = 0;
-  BROADCAST = 1;
+message ClientMessage {
+  ProtocolType protocol_type = 1;
+  map<uint32, bytes> unicasts = 2;
+  optional bytes broadcast = 3;
 }
 
-message ProtocolMessage {
+message ServerMessage {
   ProtocolType protocol_type = 1;
-  MessageType message_type = 2;
-  repeated bytes messages = 3;
+  map<uint32, bytes> unicasts = 2;
+  map<uint32, bytes> broadcasts = 3;
 }
