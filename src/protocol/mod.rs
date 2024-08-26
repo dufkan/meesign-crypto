@@ -56,7 +56,10 @@ fn encode_raw_bcast(message: Vec<u8>, protocol_type: ProtocolType) -> Vec<u8> {
 }
 
 /// Serialize and encode a broadcast message
-fn serialize_bcast<T: Serialize>(value: &T, protocol_type: ProtocolType) -> serde_json::Result<Vec<u8>> {
+fn serialize_bcast<T: Serialize>(
+    value: &T,
+    protocol_type: ProtocolType,
+) -> serde_json::Result<Vec<u8>> {
     let message = serde_json::to_vec(value)?;
     Ok(encode_raw_bcast(message, protocol_type))
 }
