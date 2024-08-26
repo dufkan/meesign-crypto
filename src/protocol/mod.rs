@@ -103,7 +103,7 @@ mod tests {
         const ROUNDS: usize;
         const INDEX_OFFSET: u32 = 0;
 
-        fn run(threshold: u32, parties: u32) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        fn run(threshold: u32, parties: u32) -> (HashMap<u32, Vec<u8>>, HashMap<u32, Vec<u8>>) {
             assert!(threshold <= parties);
 
             // initialize
@@ -172,17 +172,15 @@ mod tests {
                     .collect();
             }
 
-            let pks: Vec<_> = messages
-                .iter()
-                .map(|(_, msgs)| msgs.broadcast.as_ref().unwrap().clone())
+            let pks = messages
+                .into_iter()
+                .map(|(i, msgs)| (i, msgs.broadcast.unwrap()))
                 .collect();
 
-            let mut results: Vec<_> = ctxs
+            let results = ctxs
                 .into_iter()
                 .map(|(i, ctx)| (i, Box::new(ctx).finish().unwrap()))
                 .collect();
-            results.sort_by_key(|(i, _)| *i);
-            let results = results.into_iter().map(|(_, ctx)| ctx).collect();
 
             (pks, results)
         }
@@ -194,12 +192,15 @@ mod tests {
         const ROUNDS: usize;
         const INDEX_OFFSET: u32 = 0;
 
-        fn run(ctxs: Vec<Vec<u8>>, indices: Vec<u16>, data: Vec<u8>) -> Vec<Vec<u8>> {
+        fn run(ctxs: HashMap<u32, Vec<u8>>, data: Vec<u8>) -> Vec<Vec<u8>> {
             // initialize
-            let mut ctxs: HashMap<u32, _> = indices
-                .iter()
-                .map(|&i| (i as u32 + Self::INDEX_OFFSET, Self::new(&ctxs[i as usize])))
+            let mut ctxs: HashMap<u32, _> = ctxs
+                .into_iter()
+                .map(|(i, ctx)| (i, Self::new(&ctx)))
                 .collect();
+
+            let mut indices: Vec<_> = ctxs.keys().cloned().collect();
+            indices.sort();
 
             let mut messages: HashMap<u32, _> = ctxs
                 .iter_mut()
@@ -208,10 +209,7 @@ mod tests {
                         ctx.advance(
                             &(ProtocolInit {
                                 protocol_type: Self::PROTOCOL_TYPE as i32,
-                                indices: indices
-                                    .iter()
-                                    .map(|x| *x as u32 + Self::INDEX_OFFSET)
-                                    .collect(),
+                                indices: indices.clone(),
                                 index,
                                 data: data.clone(),
                             })

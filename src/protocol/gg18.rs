@@ -288,6 +288,8 @@ mod tests {
                 let (pks, _) =
                     <KeygenContext as KeygenProtocolTest>::run(threshold as u32, parties as u32);
 
+                let pks: Vec<_> = pks.into_values().collect();
+
                 for i in 1..parties {
                     assert_eq!(pks[0], pks[i])
                 }
@@ -304,12 +306,16 @@ mod tests {
                 let msg = b"hello";
                 let dgst = sha2::Sha256::digest(msg);
 
+                let pks: Vec<_> = pks.into_values().collect();
                 let pk = VerifyingKey::from_sec1_bytes(&pks[0]).unwrap();
 
-                let mut indices = (0..parties as u16).choose_multiple(&mut OsRng, threshold);
-                indices.sort();
+                let ctxs = ctxs
+                    .into_iter()
+                    .choose_multiple(&mut OsRng, threshold)
+                    .into_iter()
+                    .collect();
                 let results =
-                    <SignContext as ThresholdProtocolTest>::run(ctxs, indices, dgst.to_vec());
+                    <SignContext as ThresholdProtocolTest>::run(ctxs, dgst.to_vec());
 
                 let signature = results[0].clone();
 
