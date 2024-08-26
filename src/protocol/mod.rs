@@ -9,9 +9,10 @@ mod apdu;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-use crate::proto::{MessageType, ProtocolMessage, ProtocolType};
+use crate::proto::{ClientMessage, ProtocolType};
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub enum Recipient {
     Card,
@@ -36,19 +37,22 @@ pub trait ThresholdProtocol: Protocol {
         Self: Sized;
 }
 
-fn deserialize_vec<'de, T: Deserialize<'de>>(vec: &'de [Vec<u8>]) -> serde_json::Result<Vec<T>> {
-    vec.iter()
-        .map(|item| serde_json::from_slice::<T>(item))
+fn deserialize_map<'de, T: Deserialize<'de>>(
+    map: &'de HashMap<u32, Vec<u8>>,
+) -> serde_json::Result<HashMap<u32, T>> {
+    map.iter()
+        .map(|(k, v)| Ok((*k, serde_json::from_slice::<T>(v.as_slice())?)))
         .collect()
 }
 
 /// Encode a broadcast message
 fn encode_raw_bcast(message: Vec<u8>, protocol_type: ProtocolType) -> Vec<u8> {
-    ProtocolMessage {
+    ClientMessage {
         protocol_type: protocol_type.into(),
-        message_type: MessageType::Broadcast.into(),
-        messages: vec![message],
-    }.encode_to_vec()
+        unicasts: HashMap::new(),
+        broadcast: Some(message),
+    }
+    .encode_to_vec()
 }
 
 /// Serialize and encode a broadcast message
@@ -58,25 +62,25 @@ fn serialize_bcast<T: Serialize>(value: &T, protocol_type: ProtocolType) -> serd
 }
 
 /// Encode a Vec of unicast messages
-fn encode_raw_uni(messages: Vec<Vec<u8>>, protocol_type: ProtocolType) -> Vec<u8> {
-    ProtocolMessage {
+fn encode_raw_uni(messages: HashMap<u32, Vec<u8>>, protocol_type: ProtocolType) -> Vec<u8> {
+    ClientMessage {
         protocol_type: protocol_type.into(),
-        message_type: MessageType::Unicast.into(),
-        messages,
-    }.encode_to_vec()
+        unicasts: messages,
+        broadcast: None,
+    }
+    .encode_to_vec()
 }
 
-/// Serialize and encode a Vec of unicast messages
-fn serialize_uni<T: Serialize>(vec: Vec<T>, protocol_type: ProtocolType) -> serde_json::Result<Vec<u8>> {
-    let messages = vec.iter()
-        .map(serde_json::to_vec)
-        .collect::<serde_json::Result<Vec<_>>>()?;
+/// Serialize and encode a map of unicast messages
+fn serialize_uni<T, I>(kvs: I, protocol_type: ProtocolType) -> serde_json::Result<Vec<u8>>
+where
+    I: Iterator<Item = (u32, T)>,
+    T: Serialize,
+{
+    let messages = kvs
+        .map(|(k, v)| Ok((k, serde_json::to_vec(&v)?)))
+        .collect::<serde_json::Result<_>>()?;
     Ok(encode_raw_uni(messages, protocol_type))
-}
-
-/// Decode a protobuf message from the server
-fn decode(data: &[u8]) -> std::result::Result<Vec<Vec<u8>>, prost::DecodeError> {
-    Ok(ProtocolMessage::decode(data)?.messages)
 }
 
 #[cfg(test)]
@@ -86,25 +90,9 @@ mod tests {
     use prost::bytes::Bytes;
 
     use crate::{
-        proto::{ProtocolGroupInit, ProtocolInit},
+        proto::{ProtocolGroupInit, ProtocolInit, ServerMessage},
         protocol::{KeygenProtocol, ThresholdProtocol},
     };
-
-    /// Translate a message from a client to a Vec of messages for every other client
-    fn distribute_client_message(message: ProtocolMessage, parties: u32) -> Vec<Vec<u8>> {
-        match message.message_type() {
-            MessageType::Broadcast => {
-                let messages = message.messages;
-                assert_eq!(messages.len(), 1);
-                std::iter::repeat(messages[0].clone()).take(parties as usize).collect()
-            },
-            MessageType::Unicast => {
-                let messages = message.messages;
-                assert_eq!(messages.len(), parties as usize);
-                messages
-            },
-        }
-    }
 
     pub(super) trait KeygenProtocolTest: KeygenProtocol + Sized {
         // Cannot be added in Protocol (yet) due to typetag Trait limitations
@@ -116,16 +104,18 @@ mod tests {
             assert!(threshold <= parties);
 
             // initialize
-            let mut ctxs: Vec<Self> = (0..parties).map(|_| Self::new()).collect();
-            let mut messages: Vec<_> = ctxs
+            let mut ctxs: HashMap<u32, Self> = (0..parties)
+                .map(|i| (i as u32 + Self::INDEX_OFFSET, Self::new()))
+                .collect();
+
+            let mut messages: HashMap<u32, _> = ctxs
                 .iter_mut()
-                .enumerate()
-                .map(|(idx, ctx)| {
-                    ProtocolMessage::decode::<Bytes>(
+                .map(|(&index, ctx)| {
+                    let msg = ClientMessage::decode::<Bytes>(
                         ctx.advance(
                             &(ProtocolGroupInit {
                                 protocol_type: Self::PROTOCOL_TYPE as i32,
-                                index: idx as u32 + Self::INDEX_OFFSET,
+                                index,
                                 parties,
                                 threshold,
                             })
@@ -135,39 +125,37 @@ mod tests {
                         .0
                         .into(),
                     )
-                    .unwrap()
+                    .unwrap();
+                    (index, msg)
                 })
-                .map(|msg| distribute_client_message(msg, parties - 1))
                 .collect();
 
             // protocol rounds
             for _ in 0..(Self::ROUNDS - 1) {
                 messages = ctxs
                     .iter_mut()
-                    .enumerate()
-                    .map(|(idx, ctx)| {
-                        let relay = messages
-                            .iter()
-                            .enumerate()
-                            .map(|(sender, msg)| {
-                                if sender < idx {
-                                    Some(msg[idx - 1].clone())
-                                } else if sender > idx {
-                                    Some(msg[idx].clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .filter(Option::is_some)
-                            .map(Option::unwrap)
-                            .collect();
+                    .map(|(&idx, ctx)| {
+                        let mut unicasts = HashMap::new();
+                        let mut broadcasts = HashMap::new();
 
-                        ProtocolMessage::decode::<Bytes>(
+                        for (&sender, msg) in &messages {
+                            if sender == idx {
+                                continue;
+                            }
+                            if let Some(broadcast) = &msg.broadcast {
+                                broadcasts.insert(sender, broadcast.clone());
+                            }
+                            if let Some(unicast) = msg.unicasts.get(&idx) {
+                                unicasts.insert(sender, unicast.clone());
+                            }
+                        }
+
+                        let msg = ClientMessage::decode::<Bytes>(
                             ctx.advance(
-                                &(ProtocolMessage {
+                                &(ServerMessage {
                                     protocol_type: Self::PROTOCOL_TYPE as i32,
-                                    message_type: MessageType::Unicast.into(),
-                                    messages: relay,
+                                    unicasts,
+                                    broadcasts,
                                 })
                                 .encode_to_vec(),
                             )
@@ -175,18 +163,23 @@ mod tests {
                             .0
                             .into(),
                         )
-                        .unwrap()
+                        .unwrap();
+                        (idx, msg)
                     })
-                    .map(|msg| distribute_client_message(msg, parties - 1))
                     .collect();
             }
 
-            let pks: Vec<_> = messages.iter().map(|x| x[0].clone()).collect();
-
-            let results = ctxs
-                .into_iter()
-                .map(|ctx| Box::new(ctx).finish().unwrap())
+            let pks: Vec<_> = messages
+                .iter()
+                .map(|(_, msgs)| msgs.broadcast.as_ref().unwrap().clone())
                 .collect();
+
+            let mut results: Vec<_> = ctxs
+                .into_iter()
+                .map(|(i, ctx)| (i, Box::new(ctx).finish().unwrap()))
+                .collect();
+            results.sort_by_key(|(i, _)| *i);
+            let results = results.into_iter().map(|(_, ctx)| ctx).collect();
 
             (pks, results)
         }
@@ -200,17 +193,15 @@ mod tests {
 
         fn run(ctxs: Vec<Vec<u8>>, indices: Vec<u16>, data: Vec<u8>) -> Vec<Vec<u8>> {
             // initialize
-            let mut ctxs: Vec<Self> = ctxs
+            let mut ctxs: HashMap<u32, _> = indices
                 .iter()
-                .enumerate()
-                .filter(|(idx, _)| indices.contains(&(*idx as u16)))
-                .map(|(_, ctx)| Self::new(&ctx))
+                .map(|&i| (i as u32 + Self::INDEX_OFFSET, Self::new(&ctxs[i as usize])))
                 .collect();
-            let mut messages: Vec<_> = indices
-                .iter()
-                .zip(ctxs.iter_mut())
-                .map(|(idx, ctx)| {
-                    ProtocolMessage::decode::<Bytes>(
+
+            let mut messages: HashMap<u32, _> = ctxs
+                .iter_mut()
+                .map(|(&index, ctx)| {
+                    let msg = ClientMessage::decode::<Bytes>(
                         ctx.advance(
                             &(ProtocolInit {
                                 protocol_type: Self::PROTOCOL_TYPE as i32,
@@ -218,7 +209,7 @@ mod tests {
                                     .iter()
                                     .map(|x| *x as u32 + Self::INDEX_OFFSET)
                                     .collect(),
-                                index: *idx as u32 + Self::INDEX_OFFSET,
+                                index,
                                 data: data.clone(),
                             })
                             .encode_to_vec(),
@@ -227,39 +218,37 @@ mod tests {
                         .0
                         .into(),
                     )
-                    .unwrap()
+                    .unwrap();
+                    (index, msg)
                 })
-                .map(|msg| distribute_client_message(msg, indices.len() as u32 - 1))
                 .collect();
 
             // protocol rounds
             for _ in 0..(Self::ROUNDS - 1) {
                 messages = ctxs
                     .iter_mut()
-                    .enumerate()
-                    .map(|(idx, ctx)| {
-                        let relay = messages
-                            .iter()
-                            .enumerate()
-                            .map(|(sender, msg)| {
-                                if sender < idx {
-                                    Some(msg[idx - 1].clone())
-                                } else if sender > idx {
-                                    Some(msg[idx].clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .filter(Option::is_some)
-                            .map(Option::unwrap)
-                            .collect();
+                    .map(|(&idx, ctx)| {
+                        let mut unicasts = HashMap::new();
+                        let mut broadcasts = HashMap::new();
 
-                        ProtocolMessage::decode::<Bytes>(
+                        for (&sender, msg) in &messages {
+                            if sender == idx {
+                                continue;
+                            }
+                            if let Some(broadcast) = &msg.broadcast {
+                                broadcasts.insert(sender, broadcast.clone());
+                            }
+                            if let Some(unicast) = msg.unicasts.get(&idx) {
+                                unicasts.insert(sender, unicast.clone());
+                            }
+                        }
+
+                        let msg = ClientMessage::decode::<Bytes>(
                             ctx.advance(
-                                &(ProtocolMessage {
+                                &(ServerMessage {
                                     protocol_type: Self::PROTOCOL_TYPE as i32,
-                                    message_type: MessageType::Unicast.into(),
-                                    messages: relay,
+                                    unicasts,
+                                    broadcasts,
                                 })
                                 .encode_to_vec(),
                             )
@@ -267,14 +256,14 @@ mod tests {
                             .0
                             .into(),
                         )
-                        .unwrap()
+                        .unwrap();
+                        (idx, msg)
                     })
-                    .map(|msg| distribute_client_message(msg, indices.len() as u32 - 1))
                     .collect();
             }
 
             ctxs.into_iter()
-                .map(|ctx| Box::new(ctx).finish().unwrap())
+                .map(|(_, ctx)| Box::new(ctx).finish().unwrap())
                 .collect()
         }
     }

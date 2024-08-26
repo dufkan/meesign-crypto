@@ -1,4 +1,4 @@
-use crate::proto::{ProtocolGroupInit, ProtocolInit, ProtocolType};
+use crate::proto::{ProtocolGroupInit, ProtocolInit, ProtocolType, ServerMessage};
 use crate::protocol::*;
 use mpecdsa::{gg18_key_gen::*, gg18_sign::*};
 use prost::Message;
@@ -21,6 +21,12 @@ enum KeygenRound {
     Done(GG18SignContext),
 }
 
+fn map_to_sorted_vec<T>(map: HashMap<u32, T>) -> Vec<T> {
+    let mut vec: Vec<_> = map.into_iter().collect();
+    vec.sort_by_key(|(i, _)| *i);
+    vec.into_iter().map(|(_, x)| x).collect()
+}
+
 impl KeygenContext {
     fn init(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let msg = ProtocolGroupInit::decode(data)?;
@@ -36,32 +42,46 @@ impl KeygenContext {
     }
 
     fn update(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let msgs = decode(data)?;
+        let data = ServerMessage::decode(data)?;
 
         let (c, msg) = match &self.round {
             KeygenRound::R0 => unreachable!(),
             KeygenRound::R1(c1) => {
-                let (out, c2) = gg18_key_gen_2(deserialize_vec(&msgs)?, c1.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c2) = gg18_key_gen_2(msgs, c1.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (KeygenRound::R2(c2), msg)
             }
             KeygenRound::R2(c2) => {
-                let (outs, c3) = gg18_key_gen_3(deserialize_vec(&msgs)?, c2.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (outs, c3) = gg18_key_gen_3(msgs, c2.clone())?;
+
+                let mut indices: Vec<_> = data.broadcasts.into_keys().collect();
+                indices.sort();
+                let outs = indices.into_iter().zip(outs.into_iter());
                 let msg = serialize_uni(outs, ProtocolType::Gg18)?;
                 (KeygenRound::R3(c3), msg)
             }
             KeygenRound::R3(c3) => {
-                let (out, c4) = gg18_key_gen_4(deserialize_vec(&msgs)?, c3.clone())?;
+                let msgs = deserialize_map(&data.unicasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c4) = gg18_key_gen_4(msgs, c3.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (KeygenRound::R4(c4), msg)
             }
             KeygenRound::R4(c4) => {
-                let (out, c5) = gg18_key_gen_5(deserialize_vec(&msgs)?, c4.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c5) = gg18_key_gen_5(msgs, c4.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (KeygenRound::R5(c5), msg)
             }
             KeygenRound::R5(c5) => {
-                let c = gg18_key_gen_6(deserialize_vec(&msgs)?, c5.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let c = gg18_key_gen_6(msgs, c5.clone())?;
                 let msg = encode_raw_bcast(c.pk.to_bytes(false).to_vec(), ProtocolType::Gg18);
                 (KeygenRound::Done(c), msg)
             }
@@ -137,52 +157,74 @@ impl SignContext {
     }
 
     fn update(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let msgs = decode(data)?;
+        let data = ServerMessage::decode(data)?;
 
         let (c, msg) = match &self.round {
             SignRound::R0(_) => unreachable!(),
             SignRound::R1(c1) => {
-                let (outs, c2) = gg18_sign2(deserialize_vec(&msgs)?, c1.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (outs, c2) = gg18_sign2(msgs, c1.clone())?;
+
+                let mut indices: Vec<_> = data.broadcasts.into_keys().collect();
+                indices.sort();
+                let outs = indices.into_iter().zip(outs.into_iter());
                 let msg = serialize_uni(outs, ProtocolType::Gg18)?;
                 (SignRound::R2(c2), msg)
             }
             SignRound::R2(c2) => {
-                let (out, c3) = gg18_sign3(deserialize_vec(&msgs)?, c2.clone())?;
+                let msgs = deserialize_map(&data.unicasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c3) = gg18_sign3(msgs, c2.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (SignRound::R3(c3), msg)
             }
             SignRound::R3(c3) => {
-                let (out, c4) = gg18_sign4(deserialize_vec(&msgs)?, c3.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c4) = gg18_sign4(msgs, c3.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (SignRound::R4(c4), msg)
             }
             SignRound::R4(c4) => {
-                let (out, c5) = gg18_sign5(deserialize_vec(&msgs)?, c4.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c5) = gg18_sign5(msgs, c4.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (SignRound::R5(c5), msg)
             }
             SignRound::R5(c5) => {
-                let (out, c6) = gg18_sign6(deserialize_vec(&msgs)?, c5.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c6) = gg18_sign6(msgs, c5.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (SignRound::R6(c6), msg)
             }
             SignRound::R6(c6) => {
-                let (out, c7) = gg18_sign7(deserialize_vec(&msgs)?, c6.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c7) = gg18_sign7(msgs, c6.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (SignRound::R7(c7), msg)
             }
             SignRound::R7(c7) => {
-                let (out, c8) = gg18_sign8(deserialize_vec(&msgs)?, c7.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c8) = gg18_sign8(msgs, c7.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (SignRound::R8(c8), msg)
             }
             SignRound::R8(c8) => {
-                let (out, c9) = gg18_sign9(deserialize_vec(&msgs)?, c8.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let (out, c9) = gg18_sign9(msgs, c8.clone())?;
                 let msg = serialize_bcast(&out, ProtocolType::Gg18)?;
                 (SignRound::R9(c9), msg)
             }
             SignRound::R9(c9) => {
-                let sig = gg18_sign10(deserialize_vec(&msgs)?, c9.clone())?;
+                let msgs = deserialize_map(&data.broadcasts)?;
+                let msgs = map_to_sorted_vec(msgs);
+                let sig = gg18_sign10(msgs, c9.clone())?;
                 let msg = encode_raw_bcast(sig.clone(), ProtocolType::Gg18);
                 (SignRound::Done(sig), msg)
             }
