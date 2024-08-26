@@ -348,6 +348,8 @@ mod tests {
                 let (pks, _) =
                     <KeygenContext as KeygenProtocolTest>::run(threshold as u32, parties as u32);
 
+                let pks: Vec<_> = pks.into_values().collect();
+
                 for i in 1..parties {
                     assert_eq!(pks[0], pks[i])
                 }
@@ -361,13 +363,17 @@ mod tests {
             for parties in threshold..6 {
                 let (pks, ctxs) =
                     <KeygenContext as KeygenProtocolTest>::run(threshold as u32, parties as u32);
+                let pks: Vec<_> = pks.into_values().collect();
                 let msg = b"hello";
                 let ct = encrypt(msg, &pks[0]).unwrap();
 
-                let mut indices = (0..parties as u16).choose_multiple(&mut OsRng, threshold);
-                indices.sort();
+                let ctxs = ctxs
+                    .into_iter()
+                    .choose_multiple(&mut OsRng, threshold)
+                    .into_iter()
+                    .collect();
                 let results =
-                    <DecryptContext as ThresholdProtocolTest>::run(ctxs, indices, ct.to_vec());
+                    <DecryptContext as ThresholdProtocolTest>::run(ctxs, ct.to_vec());
 
                 for result in results {
                     assert_eq!(&msg.to_vec(), &result);

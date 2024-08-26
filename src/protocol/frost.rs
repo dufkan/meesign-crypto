@@ -369,7 +369,7 @@ mod tests {
 
                 let pks: Vec<VerifyingKey> = pks
                     .iter()
-                    .map(|x| serde_json::from_slice(&x).unwrap())
+                    .map(|(_, x)| serde_json::from_slice(&x).unwrap())
                     .collect();
 
                 for i in 1..parties {
@@ -386,12 +386,16 @@ mod tests {
                 let (pks, ctxs) =
                     <KeygenContext as KeygenProtocolTest>::run(threshold as u32, parties as u32);
                 let msg = b"hello";
-                let pk: VerifyingKey = serde_json::from_slice(&pks[0]).unwrap();
+                let (_, pk) = pks.iter().take(1).collect::<Vec<_>>()[0];
+                let pk: VerifyingKey = serde_json::from_slice(&pk).unwrap();
 
-                let mut indices = (0..parties as u16).choose_multiple(&mut OsRng, threshold);
-                indices.sort();
+                let ctxs = ctxs
+                    .into_iter()
+                    .choose_multiple(&mut OsRng, threshold)
+                    .into_iter()
+                    .collect();
                 let results =
-                    <SignContext as ThresholdProtocolTest>::run(ctxs, indices, msg.to_vec());
+                    <SignContext as ThresholdProtocolTest>::run(ctxs, msg.to_vec());
 
                 let signature: Signature = serde_json::from_slice(&results[0]).unwrap();
 
