@@ -21,14 +21,10 @@ struct Setup {
     index: u16,
 }
 
-fn map_index_identifier<T>(
-    kvs: impl Iterator<Item = (u32, T)>,
-) -> impl Iterator<Item = (Identifier, T)> {
-    kvs.map(|(i, x)| {
-        assert!(i > 0);
-        assert!(i <= u16::MAX as u32);
-        (Identifier::try_from(i as u16).unwrap(), x)
-    })
+fn index_to_identifier<T>((i, x): (u32, T)) -> (Identifier, T) {
+    assert!(i > 0);
+    assert!(i <= u16::MAX as u32);
+    (Identifier::try_from(i as u16).unwrap(), x)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,7 +85,7 @@ impl KeygenContext {
                 let data = ServerMessage::decode(data)?.broadcasts;
                 let round1 = deserialize_map(&data)?;
                 let indices: Vec<_> = round1.keys().cloned().collect();
-                let round1 = map_index_identifier(round1.into_iter()).collect();
+                let round1 = round1.into_iter().map(index_to_identifier).collect();
                 let (secret, round2) = dkg::part2(secret.clone(), &round1)?;
 
                 let round2 = indices.into_iter().map(|i| {
@@ -106,7 +102,7 @@ impl KeygenContext {
             KeygenRound::R2(setup, secret, round1) => {
                 let data = ServerMessage::decode(data)?.unicasts;
                 let round2 = deserialize_map(&data)?;
-                let round2 = map_index_identifier(round2.into_iter()).collect();
+                let round2 = round2.into_iter().map(index_to_identifier).collect();
                 let (key, pubkey) = frost::keys::dkg::part3(secret, round1, &round2)?;
 
                 if !self.with_card {
@@ -235,8 +231,10 @@ impl SignContext {
             SignRound::R1(nonces, commitments) => {
                 let data = ServerMessage::decode(data)?.broadcasts;
                 let commitments_map = deserialize_map(&data)?;
-                let mut commitments_map: BTreeMap<Identifier, SigningCommitments> =
-                    map_index_identifier(commitments_map.into_iter()).collect();
+                let mut commitments_map: BTreeMap<Identifier, SigningCommitments> = commitments_map
+                    .into_iter()
+                    .map(index_to_identifier)
+                    .collect();
                 let identifier = Identifier::try_from(self.setup.index).unwrap();
                 commitments_map.insert(identifier, *commitments);
 
@@ -294,7 +292,7 @@ impl SignContext {
                 let data = ServerMessage::decode(data)?.broadcasts;
                 let shares = deserialize_map(&data)?;
                 let mut shares: BTreeMap<Identifier, SignatureShare> =
-                    map_index_identifier(shares.into_iter()).collect();
+                    shares.into_iter().map(index_to_identifier).collect();
                 let identifier = Identifier::try_from(self.setup.index).unwrap();
                 shares.insert(identifier, *share);
 
