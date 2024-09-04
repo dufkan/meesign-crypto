@@ -21,6 +21,7 @@ enum KeygenRound {
     Done(GG18SignContext),
 }
 
+/// Collects a hashmap's values sorted by their respective keys
 fn map_to_sorted_vec<T>(map: HashMap<u32, T>) -> Vec<T> {
     let mut vec: Vec<_> = map.into_iter().collect();
     vec.sort_by_key(|(i, _)| *i);

@@ -37,6 +37,7 @@ pub trait ThresholdProtocol: Protocol {
         Self: Sized;
 }
 
+/// Deserializes values in a `HashMap`
 fn deserialize_map<'de, T: Deserialize<'de>>(
     map: &'de HashMap<u32, Vec<u8>>,
 ) -> serde_json::Result<HashMap<u32, T>> {
@@ -45,7 +46,7 @@ fn deserialize_map<'de, T: Deserialize<'de>>(
         .collect()
 }
 
-/// Encode a broadcast message
+/// Encode a broadcast message to protobuf format
 fn encode_raw_bcast(message: Vec<u8>, protocol_type: ProtocolType) -> Vec<u8> {
     ClientMessage {
         protocol_type: protocol_type.into(),
@@ -55,7 +56,7 @@ fn encode_raw_bcast(message: Vec<u8>, protocol_type: ProtocolType) -> Vec<u8> {
     .encode_to_vec()
 }
 
-/// Serialize and encode a broadcast message
+/// Serialize and encode a broadcast message to protobuf format
 fn serialize_bcast<T: Serialize>(
     value: &T,
     protocol_type: ProtocolType,
@@ -64,7 +65,9 @@ fn serialize_bcast<T: Serialize>(
     Ok(encode_raw_bcast(message, protocol_type))
 }
 
-/// Encode a Vec of unicast messages
+/// Encode unicast messages to protobuf format
+///
+/// Each message is associated with an index as used by a respective protocol
 fn encode_raw_uni(messages: HashMap<u32, Vec<u8>>, protocol_type: ProtocolType) -> Vec<u8> {
     ClientMessage {
         protocol_type: protocol_type.into(),
@@ -74,7 +77,9 @@ fn encode_raw_uni(messages: HashMap<u32, Vec<u8>>, protocol_type: ProtocolType) 
     .encode_to_vec()
 }
 
-/// Serialize and encode a map of unicast messages
+/// Serialize and encode unicast messages to protobuf format
+///
+/// Each message is associated with an index as used by a respective protocol
 fn serialize_uni<T, I>(kvs: I, protocol_type: ProtocolType) -> serde_json::Result<Vec<u8>>
 where
     I: IntoIterator<Item = (u32, T)>,
