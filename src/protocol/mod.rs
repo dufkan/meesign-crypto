@@ -77,10 +77,11 @@ fn encode_raw_uni(messages: HashMap<u32, Vec<u8>>, protocol_type: ProtocolType) 
 /// Serialize and encode a map of unicast messages
 fn serialize_uni<T, I>(kvs: I, protocol_type: ProtocolType) -> serde_json::Result<Vec<u8>>
 where
-    I: Iterator<Item = (u32, T)>,
+    I: IntoIterator<Item = (u32, T)>,
     T: Serialize,
 {
     let messages = kvs
+        .into_iter()
         .map(|(k, v)| Ok((k, serde_json::to_vec(&v)?)))
         .collect::<serde_json::Result<_>>()?;
     Ok(encode_raw_uni(messages, protocol_type))
