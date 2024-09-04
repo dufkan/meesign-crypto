@@ -21,6 +21,7 @@ struct Setup {
     index: u16,
 }
 
+/// Helper intended for use in `iterator.map`
 fn index_to_identifier<T>((i, x): (u32, T)) -> (Identifier, T) {
     assert!(i > 0);
     assert!(i <= u16::MAX as u32);
