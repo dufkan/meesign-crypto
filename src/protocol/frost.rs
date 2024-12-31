@@ -1,5 +1,6 @@
 use crate::proto::{ProtocolGroupInit, ProtocolInit, ProtocolType, ServerMessage};
 use crate::protocol::*;
+use crate::util::{deserialize_map, serialize_bcast, serialize_uni};
 
 use frost::keys::dkg::{self, round1, round2};
 use frost::keys::{KeyPackage, PublicKeyPackage};
@@ -393,8 +394,7 @@ mod tests {
                     .choose_multiple(&mut OsRng, threshold)
                     .into_iter()
                     .collect();
-                let results =
-                    <SignContext as ThresholdProtocolTest>::run(ctxs, msg.to_vec());
+                let results = <SignContext as ThresholdProtocolTest>::run(ctxs, msg.to_vec());
 
                 let signature: Signature = serde_json::from_slice(&results[0]).unwrap();
 

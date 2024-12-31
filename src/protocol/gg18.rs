@@ -1,5 +1,6 @@
 use crate::proto::{ProtocolGroupInit, ProtocolInit, ProtocolType, ServerMessage};
 use crate::protocol::*;
+use crate::util::{deserialize_map, encode_raw_bcast, serialize_bcast, serialize_uni};
 use mpecdsa::{gg18_key_gen::*, gg18_sign::*};
 use prost::Message;
 // TODO: use bincode instead?
@@ -315,8 +316,7 @@ mod tests {
                     .choose_multiple(&mut OsRng, threshold)
                     .into_iter()
                     .collect();
-                let results =
-                    <SignContext as ThresholdProtocolTest>::run(ctxs, dgst.to_vec());
+                let results = <SignContext as ThresholdProtocolTest>::run(ctxs, dgst.to_vec());
 
                 let signature = results[0].clone();
 
